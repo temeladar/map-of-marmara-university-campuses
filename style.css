@@ -108,7 +108,23 @@ html, body, #app {
   border-color: #10314b;
 }
 
+#campus-select {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  max-width: 46vw;
+}
+
 @media (max-width: 640px) {
+  #view-controls {
+    flex-wrap: wrap;
+  }
+
   #app {
     flex-direction: column;
   }

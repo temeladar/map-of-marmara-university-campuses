@@ -233,7 +233,37 @@ function stopRotation() {
   document.getElementById("btn-rotate").classList.remove("active");
 }
 
-CAMPUSES.forEach((campus) => {
+const selectEl = document.getElementById("campus-select");
+const markers = [];
+const listItems = [];
+
+function focusCampus(i) {
+  const campus = CAMPUSES[i];
+  stopRotation();
+  map.flyTo({
+    center: [campus.lng, campus.lat],
+    zoom: 16.2,
+    pitch: 60,
+    bearing: -15,
+    duration: 2500,
+    essential: true
+  });
+  markers[i].togglePopup();
+  listItems.forEach(el => el.classList.remove("active"));
+  listItems[i].classList.add("active");
+  selectEl.value = String(i);
+}
+
+function showAllCampuses() {
+  stopRotation();
+  const bounds = new maplibregl.LngLatBounds();
+  CAMPUSES.forEach(c => bounds.extend([c.lng, c.lat]));
+  map.fitBounds(bounds, { padding: 60, pitch: 55, bearing: -15, duration: 2000 });
+  listItems.forEach(el => el.classList.remove("active"));
+  selectEl.value = "all";
+}
+
+CAMPUSES.forEach((campus, i) => {
   const approxNote = campus.approximate
     ? '<br><small>(konum yaklaşıktır)</small>' : "";
   const popup = new maplibregl.Popup({ offset: 32 }).setHTML(
@@ -246,25 +276,24 @@ CAMPUSES.forEach((campus) => {
     .setLngLat([campus.lng, campus.lat])
     .setPopup(popup)
     .addTo(map);
+  markers.push(marker);
 
   const li = document.createElement("li");
   li.innerHTML = `<span class="campus-name">${campus.name}</span>` +
                  `<span class="campus-district">${campus.district}</span>`;
-  li.addEventListener("click", () => {
-    stopRotation();
-    map.flyTo({
-      center: [campus.lng, campus.lat],
-      zoom: 16.2,
-      pitch: 60,
-      bearing: -15,
-      duration: 2500,
-      essential: true
-    });
-    marker.togglePopup();
-    listEl.querySelectorAll("li").forEach(el => el.classList.remove("active"));
-    li.classList.add("active");
-  });
+  li.addEventListener("click", () => focusCampus(i));
   listEl.appendChild(li);
+  listItems.push(li);
+
+  const opt = document.createElement("option");
+  opt.value = String(i);
+  opt.textContent = `${campus.name} (${campus.district})`;
+  selectEl.appendChild(opt);
+});
+
+selectEl.addEventListener("change", () => {
+  if (selectEl.value === "all") showAllCampuses();
+  else if (selectEl.value !== "") focusCampus(Number(selectEl.value));
 });
 
 // ---- Görünüm düğmeleri ----
