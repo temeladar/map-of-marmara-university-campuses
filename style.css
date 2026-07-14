@@ -79,6 +79,33 @@ html, body, #app {
 
 #map {
   flex: 1;
+  position: relative;
+}
+
+#view-controls {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  display: flex;
+  gap: 6px;
+}
+
+#view-controls button {
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+#view-controls button.active {
+  background: #10314b;
+  color: #fff;
+  border-color: #10314b;
 }
 
 @media (max-width: 640px) {
