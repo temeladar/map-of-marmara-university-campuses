@@ -9,11 +9,9 @@ const OVERPASS_MIRRORS = [
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter"
 ];
-// Kampüs arazisi OSM'de çizilmemişse işaretçi çevresinde bu yarıçap kullanılır.
-const FALLBACK_RADIUS_M = 500;
 // İstanbul'da Marmara Üniversitesi yerleşkelerini kapsayan sınır kutusu.
 const BBOX = "40.85,28.90,41.12,29.25";
-const CACHE_KEY = "marmara-campus-data-v1";
+const CACHE_KEY = "marmara-campus-data-v2";
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 hafta
 
 const map = new maplibregl.Map({
@@ -195,14 +193,17 @@ async function overpass(query) {
   throw lastErr;
 }
 
-// 1. sorgu: yalnızca "Marmara" üniversite arazileri (küçük ve hızlı).
+// 1. sorgu: bölgedeki TÜM üniversite arazileri + operator'ü Marmara olan
+// alanlar. Kampüs poligonlarının adında "Marmara" geçmeyebiliyor (ör. sadece
+// "Göztepe Yerleşkesi"); doğru poligon istemci tarafında işaretçi içerme ve
+// isim eşleşmesiyle seçilir.
 function groundsQuery() {
-  return `[out:json][timeout:45];
+  return `[out:json][timeout:60];
 (
-  way["amenity"="university"]["name"~"armara"](${BBOX});
-  relation["amenity"="university"]["name"~"armara"](${BBOX});
-  way["amenity"="university"]["operator"~"armara"](${BBOX});
-  relation["amenity"="university"]["operator"~"armara"](${BBOX});
+  way["amenity"="university"](${BBOX});
+  relation["amenity"="university"](${BBOX});
+  way["operator"~"armara"](${BBOX});
+  relation["operator"~"armara"](${BBOX});
 );
 out geom;`;
 }
@@ -296,6 +297,18 @@ function polyCentroid(ring) {
   return [lng / ring.length, lat / ring.length];
 }
 
+// Küresel yaklaşımla poligon alanı (m²) — spor sahası gibi küçük
+// poligonların kampüs arazisi sanılmasını önlemek için kullanılır.
+function ringAreaM2(ring) {
+  const R = 6378137, d2r = Math.PI / 180;
+  let sum = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [x1, y1] = ring[i], [x2, y2] = ring[i + 1];
+    sum += (x2 - x1) * d2r * (2 + Math.sin(y1 * d2r) + Math.sin(y2 * d2r));
+  }
+  return Math.abs(sum * R * R / 2);
+}
+
 // Işın sayma yöntemiyle nokta-poligon testi.
 function pointInRing(pt, ring) {
   let inside = false;
@@ -309,33 +322,30 @@ function pointInRing(pt, ring) {
   return inside;
 }
 
-// İşaretçileri OSM'deki gerçek kampüs poligonunun merkezine oturtur;
-// isim eşleşmesi olan poligonlara öncelik verir.
-function snapMarkers(groundFeatures) {
-  CAMPUSES.forEach((c, i) => {
-    let best = null, bestScore = Infinity;
+// Her kampüs için OSM poligonlarını seçer. Kural sırası:
+//   1) işaretçiyi İÇEREN poligon,
+//   2) adı kampüs anahtar kelimeleriyle eşleşen yakın (<1,5 km) poligon,
+//   3) adında/işletmecisinde "Marmara" geçen çok yakın (<0,8 km) poligon.
+// Spor sahası benzeri küçük poligonlar (<20.000 m²) hiç değerlendirilmez.
+// Hiçbir poligon seçilemezse o kampüste BİNA ÇİZİLMEZ — asla mahalle
+// binalarından oluşan yarıçap dairesi gösterilmez.
+function selectCampusGrounds(groundFeatures) {
+  return CAMPUSES.map((c) => {
+    const mine = [];
     for (const f of groundFeatures) {
-      const [clng, clat] = polyCentroid(f.geometry.coordinates[0]);
+      const ring = f.geometry.coordinates[0];
+      if (f.properties.areaM2 < 20000) continue;
+      const [clng, clat] = polyCentroid(ring);
       const d = distKm(c, { lat: clat, lng: clng });
-      if (d > 2.0) continue;
       const name = (f.properties.name || "").toLocaleLowerCase("tr");
       const nameHit = (c.match || []).some(k => name.includes(k));
-      const score = nameHit ? d * 0.3 : d;
-      if (score < bestScore) { bestScore = score; best = [clng, clat]; }
+      const contains = pointInRing([c.lng, c.lat], ring);
+      if (contains || (nameHit && d < 1.5) || (f.properties.marmara && d < 0.8)) {
+        mine.push(f);
+      }
     }
-    if (best) {
-      c.lng = best[0];
-      c.lat = best[1];
-      markers[i].setLngLat(best);
-    }
+    return mine;
   });
-  buildConnections();
-}
-
-function applyData(data) {
-  map.getSource("campus-grounds").setData(data.grounds);
-  map.getSource("campus-buildings").setData(data.buildings);
-  snapMarkers(data.grounds.features);
 }
 
 async function loadCampusData() {
@@ -345,56 +355,85 @@ async function loadCampusData() {
     cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
   } catch (e) { /* bozuk önbellek yok sayılır */ }
   if (cached) {
-    applyData(cached);
+    map.getSource("campus-grounds").setData(cached.grounds);
+    map.getSource("campus-buildings").setData(cached.buildings);
+    (cached.markerPos || []).forEach((p, i) => {
+      if (p) { CAMPUSES[i].lng = p[0]; CAMPUSES[i].lat = p[1]; markers[i].setLngLat(p); }
+    });
+    buildConnections();
     if (Date.now() - cached.time < CACHE_TTL_MS) return;
   }
 
   try {
-    // 1) Kampüs arazileri.
+    // 1) Bölgedeki üniversite arazileri → her kampüsün kendi poligonları seçilir.
     const groundsOsm = await overpass(groundsQuery());
-    const groundFeatures = [];
+    const allGrounds = [];
     for (const el of groundsOsm.elements || []) {
       const tags = el.tags || {};
+      if (tags.building) continue; // binalar arazi değildir
+      const text = `${tags.name || ""} ${tags.operator || ""}`.toLocaleLowerCase("tr");
       for (const ring of elementPolygons(el)) {
-        groundFeatures.push({
+        allGrounds.push({
           type: "Feature",
           geometry: { type: "Polygon", coordinates: [ring] },
-          properties: { name: tags.name || "" }
+          properties: {
+            name: tags.name || "",
+            marmara: text.includes("marmara"),
+            areaM2: ringAreaM2(ring)
+          }
         });
       }
     }
-    const grounds = { type: "FeatureCollection", features: groundFeatures };
+    const perCampus = selectCampusGrounds(allGrounds);
+    const selected = [...new Set(perCampus.flat())];
+    const grounds = { type: "FeatureCollection", features: selected };
     map.getSource("campus-grounds").setData(grounds);
-    snapMarkers(groundFeatures);
 
-    // 2) Her kampüs için yarıçap: poligonu varsa poligonu kapsayacak kadar.
-    const rings = groundFeatures.map(f => f.geometry.coordinates[0]);
-    const centers = CAMPUSES.map(c => {
-      const mine = rings.filter(ring => pointInRing([c.lng, c.lat], ring));
-      let r = FALLBACK_RADIUS_M;
-      for (const ring of mine) {
-        for (const [lng, lat] of ring) {
+    // İşaretçiyi kampüsün en büyük poligonunun merkezine oturt.
+    const markerPos = CAMPUSES.map((c, i) => {
+      const mine = perCampus[i];
+      if (mine.length === 0) return null;
+      const biggest = mine.reduce((a, b) => a.properties.areaM2 > b.properties.areaM2 ? a : b);
+      const pos = polyCentroid(biggest.geometry.coordinates[0]);
+      c.lng = pos[0];
+      c.lat = pos[1];
+      markers[i].setLngLat(pos);
+      return pos;
+    });
+    buildConnections();
+
+    // 2) Poligonu bulunan kampüsler için, poligonu kapsayan yarıçapta binalar.
+    const centers = [];
+    CAMPUSES.forEach((c, i) => {
+      if (perCampus[i].length === 0) return;
+      let r = 200;
+      for (const f of perCampus[i]) {
+        for (const [lng, lat] of f.geometry.coordinates[0]) {
           r = Math.max(r, distKm(c, { lat, lng }) * 1000 + 60);
         }
       }
-      return { lat: c.lat, lng: c.lng, r: Math.min(r, 1600), hasGrounds: mine.length > 0 };
+      centers.push({ lat: c.lat, lng: c.lng, r: Math.min(r, 1800) });
     });
 
-    const bldOsm = await overpass(buildingsQuery(centers));
-    const all = buildingFeatures(bldOsm.elements || []);
-    const features = all.filter(f => {
-      const centroid = polyCentroid(f.geometry.coordinates[0]);
-      if (rings.some(ring => pointInRing(centroid, ring))) return true;
-      return centers.some(c => !c.hasGrounds &&
-        distKm(c, { lat: centroid[1], lng: centroid[0] }) < FALLBACK_RADIUS_M / 1000);
-    });
+    let features = [];
+    if (centers.length > 0) {
+      const bldOsm = await overpass(buildingsQuery(centers));
+      const rings = selected.map(f => f.geometry.coordinates[0]);
+      // Kesin kural: yalnızca seçilmiş kampüs poligonlarının İÇİNDEKİ binalar.
+      features = buildingFeatures(bldOsm.elements || []).filter(f => {
+        const centroid = polyCentroid(f.geometry.coordinates[0]);
+        return rings.some(ring => pointInRing(centroid, ring));
+      });
+    }
     const buildings = { type: "FeatureCollection", features };
     map.getSource("campus-buildings").setData(buildings);
 
     try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ time: Date.now(), grounds, buildings }));
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ time: Date.now(), grounds, buildings, markerPos }));
     } catch (e) { /* önbelleğe sığmazsa sorun değil */ }
-    console.log(`Yerleşke verisi: ${groundFeatures.length} arazi, ${features.length} bina`);
+    const missing = CAMPUSES.filter((c, i) => perCampus[i].length === 0).map(c => c.name);
+    console.log(`Yerleşke verisi: ${selected.length} arazi poligonu, ${features.length} bina.` +
+      (missing.length ? ` OSM'de sınırı bulunamayanlar: ${missing.join(", ")}` : ""));
   } catch (err) {
     console.warn("Yerleşke bina verisi yüklenemedi:", err);
   }

@@ -35,7 +35,7 @@ const CAMPUSES = [
     district: "Beykoz",
     lat: 41.080917,
     lng: 29.071083,
-    match: ["anadoluhisarı", "anadolu hisarı", "spor"],
+    match: ["anadoluhisarı", "anadolu hisarı"],
     info: "Spor Bilimleri Fakültesi. Boğaz kıyısında, Göksu Deresi yakınında."
   },
   {
