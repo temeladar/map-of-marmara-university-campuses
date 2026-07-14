@@ -1,6 +1,6 @@
-# Map of Marmara University Campuses
+# RTE Külliyesi 3B Harita
 
-Marmara Üniversitesi yerleşkelerini 3B (üç boyutlu) gösteren interaktif harita. [MapLibre GL JS](https://maplibre.org/) ve [OpenFreeMap](https://openfreemap.org/) vektör tile'ları kullanır; binalar OpenStreetMap verisindeki gerçek yüksekliklerine göre 3B olarak çizilir. API anahtarı ve derleme adımı gerektirmez — statik bir sayfadır.
+Marmara Üniversitesi **Recep Tayyip Erdoğan Külliyesi**'ne (Başıbüyük, Maltepe) odaklanmış interaktif 3B harita. [MapLibre GL JS](https://maplibre.org/) kullanır; API anahtarı ve derleme adımı gerektirmez — statik bir sayfadır.
 
 ## Çalıştırma
 
@@ -11,30 +11,16 @@ python3 -m http.server 8000
 # http://localhost:8000
 ```
 
-## Kullanım
+## Özellikler
 
-- Kenar çubuğundan bir yerleşkeye tıklayın — kamera 3B görünümde oraya uçar.
-- Sağ tık (veya Ctrl + sürükle) ile kamerayı döndürüp eğebilirsiniz.
-- Sol üstteki **3B / 2B** düğmeleriyle perspektif ve kuş bakışı arasında geçiş yapın; **Uydu** düğmesi Esri uydu görüntüsünü açar, **⟳** düğmesi kamerayı otomatik döndürür.
-
-## Yerleşkeler
-
-Yerleşke verileri `campuses.js` dosyasındadır. Haydarpaşa Yerleşkesi 2016'da Sağlık Bilimleri Üniversitesi'ne devredildiği için listede yer almaz.
-
-| Yerleşke | İlçe | Koordinat kaynağı |
-|---|---|---|
-| Göztepe Yerleşkesi | Kadıköy | haritamap.com |
-| Recep Tayyip Erdoğan Külliyesi | Maltepe (Başıbüyük) | tr.geoview.info |
-| Mehmet Genç Külliyesi | Kartal (Dragos) | adresten türetildi (yaklaşık) |
-| Anadoluhisarı Yerleşkesi | Beykoz | haritamap.com |
-| Bağlarbaşı Yerleşkesi | Üsküdar (Altunizade) | haritamap.com |
-| Acıbadem Yerleşkesi | Kadıköy | adresten türetildi (yaklaşık) |
-| Sultanahmet Yerleşkesi | Fatih | adresten türetildi (yaklaşık) |
+- Harita, külliye sınırlarının **1 km çevresindeki dikdörtgen alanla** sınırlıdır: dışarısı beyaz maskeyle kapatılır, kamera bu çerçevenin dışına çıkamaz (pembe çizgi çerçeveyi gösterir).
+- Külliyenin binaları OSM verisinden **3B** çizilir (Apple Maps benzeri açık krem/pastel stil; hastane, cami ve yurt binaları pastel tonlarla ayrışır). Kampüs poligonu dışındaki hiçbir bina modellenmez.
+- Kenar çubuğu, OSM'de adlandırılmış külliye binalarını listeler; tıklayınca kamera binaya uçar.
+- **3B / 2B** perspektif geçişi, **Uydu** (Esri) katmanı ve **⟳** otomatik kamera dönüşü.
+- Veri iki küçük Overpass sorgusuyla çekilir, 4 aynada tekrar denenir ve 1 hafta `localStorage`'da önbelleklenir. İşaretçi, OSM'deki gerçek kampüs poligonunun merkezine otomatik oturur.
 
 ## Notlar
 
-- Yalnızca Marmara Üniversitesi yerleşkelerindeki binalar 3B modellenir; şehrin geri kalanı sade 2B kalır (yollar gri/beyaz tonlarda). Binalar Apple Maps benzeri açık krem tonda çizilir; hastane, cami ve yurt binaları pastel renklerle ayrışır.
-- Veri, sayfa açılışında iki küçük Overpass sorgusuyla (kampüs arazileri + her kampüs çevresindeki binalar) çekilir; sorgular 4 farklı Overpass aynasında tekrar denenir ve sonuç 1 hafta localStorage'da önbelleklenir. İşaretçiler gerçek kampüs poligonunun merkezine otomatik oturtulur.
-- Ana yerleşke Göztepe'den diğer yerleşkelere ince parabolik bağlantı yayları çizilir; her yayın üzerinde kuş uçuşu mesafe (km) yazar.
-- Yükseklik `height` → `building:levels × 3,2 m` → 9 m sırasıyla belirlenir. Fotogerçekçi (birebir doku kaplı) 3B için Google Photorealistic 3D Tiles veya Cesium ion gibi API anahtarı gerektiren servisler gerekir.
-- MapLibre GL `vendor/` altında repoya gömülüdür; yalnızca harita tile'ları internetten yüklenir.
+- Bina yükseklikleri `height` → `building:levels × 3,2 m` → 9 m sırasıyla belirlenir; saha üstü çatı/tribün yapıları alçak ve açık gri çizilir.
+- Fotogerçekçi (birebir doku kaplı) 3B için Google Photorealistic 3D Tiles veya Cesium ion gibi API anahtarı gerektiren servisler gerekir.
+- MapLibre GL `vendor/` altında repoya gömülüdür; yalnızca harita tile'ları ve OSM verisi internetten yüklenir.
