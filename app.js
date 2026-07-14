@@ -6,7 +6,7 @@ const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/Wo
 // 3B modellenir; şehrin geri kalanı sade 2B kalır.
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 // OSM'de kampüs arazisi çizilmemişse yedek olarak kullanılacak yarıçap.
-const FALLBACK_RADIUS_M = 350;
+const FALLBACK_RADIUS_M = 500;
 // İstanbul'da Marmara Üniversitesi yerleşkelerini kapsayan sınır kutusu.
 const BBOX = "40.85,28.90,41.12,29.25";
 
@@ -158,6 +158,8 @@ function campusAreaQuery() {
 (
   way["amenity"="university"]["name"~"armara"](${BBOX});
   relation["amenity"="university"]["name"~"armara"](${BBOX});
+  way["amenity"="university"]["operator"~"armara"](${BBOX});
+  relation["amenity"="university"]["operator"~"armara"](${BBOX});
 )->.unis;
 .unis map_to_area ->.a;
 (
@@ -306,10 +308,21 @@ async function loadCampusData() {
 
     let features = buildingFeatures(buildingEls);
 
-    // Arazi poligonu OSM'de eksikse (çok az bina döndüyse) nokta çevresi yedeği.
-    if (features.length < 10) {
-      const fb = await overpass(fallbackQuery(CAMPUSES));
-      features = buildingFeatures(fb.elements || []);
+    // Kampüs bazında kontrol: arazi sorgusu bir yerleşkenin binalarını
+    // getirmediyse (ör. Göztepe'nin OSM poligonu eşleşmezse) yalnızca o
+    // yerleşkeler için nokta çevresi yedeği çalıştırılıp sonuçlar birleştirilir.
+    const nearCount = (c) => features.filter(f => {
+      const [lng, lat] = polyCentroid(f.geometry.coordinates[0]);
+      return distKm(c, { lat, lng }) < 0.8;
+    }).length;
+    const missing = CAMPUSES.filter(c => nearCount(c) < 3);
+
+    if (missing.length > 0) {
+      const seen = new Set(buildingEls.map(el => `${el.type}/${el.id}`));
+      const fb = await overpass(fallbackQuery(missing));
+      const extra = (fb.elements || []).filter(el => !seen.has(`${el.type}/${el.id}`));
+      features = features.concat(buildingFeatures(extra));
+      console.log(`Yedek sorgu: ${missing.map(c => c.name).join(", ")} (+${extra.length} öge)`);
     }
 
     map.getSource("campus-grounds").setData({ type: "FeatureCollection", features: groundFeatures });
