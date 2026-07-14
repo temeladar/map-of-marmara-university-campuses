@@ -2,9 +2,13 @@
 const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 // Esri World Imagery: ücretsiz uydu görüntüsü (atıf zorunlu).
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-// Kampüs binalarının gerçek ayak izi ve yükseklikleri çalışma anında OSM'den çekilir.
+// Yalnızca Marmara Üniversitesi yerleşkelerindeki binalar OSM'den çekilip
+// 3B modellenir; şehrin geri kalanı modellenmez.
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
-const CAMPUS_RADIUS_M = 600;
+// OSM'de kampüs arazisi çizilmemişse yedek olarak kullanılacak yarıçap.
+const FALLBACK_RADIUS_M = 350;
+// İstanbul'da Marmara Üniversitesi yerleşkelerini kapsayan sınır kutusu.
+const BBOX = "40.85,28.90,41.12,29.25";
 
 const map = new maplibregl.Map({
   container: "map",
@@ -34,30 +38,25 @@ map.on("load", () => {
     layout: { visibility: "none" }
   });
 
-  // Temel haritanın kendi binaları (OSM yükseklik verisiyle).
+  // Kampüs arazisi sınırları.
+  map.addSource("campus-grounds", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] }
+  });
   map.addLayer({
-    id: "3d-buildings",
-    source: "openmaptiles",
-    "source-layer": "building",
-    type: "fill-extrusion",
-    minzoom: 13,
-    paint: {
-      "fill-extrusion-color": [
-        "interpolate", ["linear"],
-        ["coalesce", ["get", "render_height"], 8],
-        0, "#d8cfc0",
-        30, "#b3a591",
-        80, "#8d7f6d"
-      ],
-      "fill-extrusion-height": ["coalesce", ["get", "render_height"], 8],
-      "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
-      "fill-extrusion-opacity": 0.92
-    }
+    id: "campus-grounds-fill",
+    type: "fill",
+    source: "campus-grounds",
+    paint: { "fill-color": "#2e7d32", "fill-opacity": 0.12 }
+  });
+  map.addLayer({
+    id: "campus-grounds-line",
+    type: "line",
+    source: "campus-grounds",
+    paint: { "line-color": "#2e7d32", "line-width": 2, "line-dasharray": [3, 2] }
   });
 
-  // Kampüs binaları: Overpass'tan çekilen güncel OSM ayak izleri.
-  // Temel haritanın tile'larında eksik/basit kalan yeni yapıları (ör. RTE
-  // Külliyesi) da kapsar ve uydu görünümünde de 3B çizilir.
+  // Yalnızca yerleşke binaları: 3B modellenen tek katman budur.
   map.addSource("campus-buildings", {
     type: "geojson",
     data: { type: "FeatureCollection", features: [] }
@@ -66,12 +65,13 @@ map.on("load", () => {
     id: "campus-buildings",
     type: "fill-extrusion",
     source: "campus-buildings",
-    minzoom: 12,
+    minzoom: 11,
     paint: {
       "fill-extrusion-color": [
         "case",
-        ["get", "isCampus"], "#c98a4b",
-        "#cfc5b4"
+        ["get", "isHospital"], "#b46a55",
+        ["get", "isMosque"], "#7d8f6b",
+        "#c98a4b"
       ],
       "fill-extrusion-height": ["get", "height"],
       "fill-extrusion-base": ["get", "minHeight"],
@@ -80,14 +80,34 @@ map.on("load", () => {
   });
 
   map.setLight({ anchor: "viewport", intensity: 0.4 });
-  loadCampusBuildings();
+  loadCampusData();
 });
 
-// ---- Overpass: kampüs çevresindeki bina ayak izlerini getir ----
+// ---- Overpass: yalnızca üniversite arazisindeki binaları getir ----
 
-function overpassQuery() {
-  const clauses = CAMPUSES.map(c =>
-    `way[building](around:${CAMPUS_RADIUS_M},${c.lat},${c.lng});`
+// OSM'de "Marmara" adlı/işletmeli üniversite arazilerini bulur, bu arazilerin
+// İÇİNDEKİ binaları döndürür. Şehrin geri kalanındaki binalar sorguya girmez.
+function campusAreaQuery() {
+  return `[out:json][timeout:90];
+(
+  way["amenity"="university"]["name"~"armara"](${BBOX});
+  relation["amenity"="university"]["name"~"armara"](${BBOX});
+  way["operator"~"Marmara Üniversitesi"](${BBOX});
+  relation["operator"~"Marmara Üniversitesi"](${BBOX});
+)->.unis;
+.unis map_to_area ->.a;
+(
+  way[building](area.a);
+  relation[building](area.a);
+)->.bld;
+.unis out geom;
+.bld out geom;`;
+}
+
+// Arazi poligonu çizilmemiş yerleşkeler için yedek: nokta çevresindeki binalar.
+function fallbackQuery(campuses) {
+  const clauses = campuses.map(c =>
+    `way[building](around:${FALLBACK_RADIUS_M},${c.lat},${c.lng});`
   ).join("");
   return `[out:json][timeout:60];(${clauses});out geom;`;
 }
@@ -112,46 +132,92 @@ function parseMinHeight(tags) {
   return 0;
 }
 
-// Üniversiteye ait görünen binaları vurgulamak için basit sezgisel kontrol.
-function isCampusBuilding(tags) {
-  const t = `${tags.name || ""} ${tags.operator || ""}`.toLocaleLowerCase("tr");
-  return t.includes("marmara") || t.includes("üniversite") ||
-    ["university", "hospital", "dormitory", "college"].includes(tags.building) ||
-    tags.amenity === "university" || tags.amenity === "hospital";
+// way → tek poligon; multipolygon relation → outer üyelerin poligonları.
+function elementPolygons(el) {
+  const rings = [];
+  if (el.type === "way" && el.geometry && el.geometry.length >= 3) {
+    rings.push(el.geometry.map(p => [p.lon, p.lat]));
+  } else if (el.type === "relation" && el.members) {
+    for (const m of el.members) {
+      if (m.type === "way" && m.role !== "inner" && m.geometry && m.geometry.length >= 3) {
+        rings.push(m.geometry.map(p => [p.lon, p.lat]));
+      }
+    }
+  }
+  return rings.map(ring => {
+    const first = ring[0], last = ring[ring.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
+    return ring;
+  });
 }
 
-async function loadCampusBuildings() {
-  try {
-    const res = await fetch(OVERPASS_URL, {
-      method: "POST",
-      body: "data=" + encodeURIComponent(overpassQuery()),
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
-    if (!res.ok) throw new Error(`Overpass ${res.status}`);
-    const osm = await res.json();
-
-    const features = [];
-    for (const el of osm.elements || []) {
-      if (el.type !== "way" || !el.geometry || el.geometry.length < 3) continue;
-      const ring = el.geometry.map(p => [p.lon, p.lat]);
-      const first = ring[0], last = ring[ring.length - 1];
-      if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
-      const tags = el.tags || {};
+function buildingFeatures(elements) {
+  const features = [];
+  for (const el of elements) {
+    const tags = el.tags || {};
+    if (!tags.building) continue;
+    for (const ring of elementPolygons(el)) {
       features.push({
         type: "Feature",
         geometry: { type: "Polygon", coordinates: [ring] },
         properties: {
           height: parseHeight(tags),
           minHeight: parseMinHeight(tags),
-          isCampus: isCampusBuilding(tags)
+          isHospital: tags.building === "hospital" || tags.amenity === "hospital",
+          isMosque: tags.building === "mosque" || tags.amenity === "place_of_worship",
+          name: tags.name || ""
         }
       });
     }
+  }
+  return features;
+}
+
+async function overpass(query) {
+  const res = await fetch(OVERPASS_URL, {
+    method: "POST",
+    body: "data=" + encodeURIComponent(query),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" }
+  });
+  if (!res.ok) throw new Error(`Overpass ${res.status}`);
+  return res.json();
+}
+
+async function loadCampusData() {
+  try {
+    const osm = await overpass(campusAreaQuery());
+    const elements = osm.elements || [];
+
+    const groundFeatures = [];
+    const buildingEls = [];
+    for (const el of elements) {
+      const tags = el.tags || {};
+      if (tags.building) {
+        buildingEls.push(el);
+      } else if (tags.amenity === "university" || tags.operator) {
+        for (const ring of elementPolygons(el)) {
+          groundFeatures.push({
+            type: "Feature",
+            geometry: { type: "Polygon", coordinates: [ring] },
+            properties: { name: tags.name || "" }
+          });
+        }
+      }
+    }
+
+    let features = buildingFeatures(buildingEls);
+
+    // Arazi poligonu OSM'de eksikse (çok az bina döndüyse) nokta çevresi yedeği.
+    if (features.length < 10) {
+      const fb = await overpass(fallbackQuery(CAMPUSES));
+      features = buildingFeatures(fb.elements || []);
+    }
+
+    map.getSource("campus-grounds").setData({ type: "FeatureCollection", features: groundFeatures });
     map.getSource("campus-buildings").setData({ type: "FeatureCollection", features });
-    console.log(`Kampüs binaları yüklendi: ${features.length} bina`);
+    console.log(`Yerleşke verisi: ${groundFeatures.length} arazi, ${features.length} bina`);
   } catch (err) {
-    // Overpass'a ulaşılamazsa temel haritanın kendi 3B binaları göstermeye devam eder.
-    console.warn("Kampüs bina verisi yüklenemedi:", err);
+    console.warn("Yerleşke bina verisi yüklenemedi:", err);
   }
 }
 
