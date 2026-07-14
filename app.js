@@ -1,9 +1,9 @@
-// OpenFreeMap: API anahtarı gerektirmeyen, OSM tabanlı ücretsiz vektör tile servisi.
-const STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+// OpenFreeMap "bright": Google Maps benzeri sade ve canlı 2B temel harita.
+const STYLE_URL = "https://tiles.openfreemap.org/styles/bright";
 // Esri World Imagery: ücretsiz uydu görüntüsü (atıf zorunlu).
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 // Yalnızca Marmara Üniversitesi yerleşkelerindeki binalar OSM'den çekilip
-// 3B modellenir; şehrin geri kalanı modellenmez.
+// 3B modellenir; şehrin geri kalanı sade 2B kalır.
 const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
 // OSM'de kampüs arazisi çizilmemişse yedek olarak kullanılacak yarıçap.
 const FALLBACK_RADIUS_M = 350;
@@ -38,7 +38,7 @@ map.on("load", () => {
     layout: { visibility: "none" }
   });
 
-  // Kampüs arazisi sınırları.
+  // Kampüs arazisi sınırları (canlı yeşil).
   map.addSource("campus-grounds", {
     type: "geojson",
     data: { type: "FeatureCollection", features: [] }
@@ -47,13 +47,49 @@ map.on("load", () => {
     id: "campus-grounds-fill",
     type: "fill",
     source: "campus-grounds",
-    paint: { "fill-color": "#2e7d32", "fill-opacity": 0.12 }
+    paint: { "fill-color": "#00c853", "fill-opacity": 0.14 }
   });
   map.addLayer({
     id: "campus-grounds-line",
     type: "line",
     source: "campus-grounds",
-    paint: { "line-color": "#2e7d32", "line-width": 2, "line-dasharray": [3, 2] }
+    paint: { "line-color": "#00a844", "line-width": 2.5 }
+  });
+
+  // Kampüsler arası bağlantı hatları (ana yerleşke Göztepe merkezli).
+  map.addSource("campus-links", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] }
+  });
+  map.addLayer({
+    id: "campus-links-casing",
+    type: "line",
+    source: "campus-links",
+    layout: { "line-cap": "round" },
+    paint: { "line-color": "#ffffff", "line-width": 6, "line-opacity": 0.9 }
+  });
+  map.addLayer({
+    id: "campus-links",
+    type: "line",
+    source: "campus-links",
+    layout: { "line-cap": "round" },
+    paint: { "line-color": "#ff2d78", "line-width": 3 }
+  });
+  map.addLayer({
+    id: "campus-links-label",
+    type: "symbol",
+    source: "campus-links",
+    layout: {
+      "symbol-placement": "line-center",
+      "text-field": ["get", "label"],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": 12
+    },
+    paint: {
+      "text-color": "#c2185b",
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 2
+    }
   });
 
   // Yalnızca yerleşke binaları: 3B modellenen tek katman budur.
@@ -69,9 +105,11 @@ map.on("load", () => {
     paint: {
       "fill-extrusion-color": [
         "case",
-        ["get", "isHospital"], "#b46a55",
-        ["get", "isMosque"], "#7d8f6b",
-        "#c98a4b"
+        ["get", "isRoof"], "#cfd8dc",
+        ["get", "isHospital"], "#ff1744",
+        ["get", "isMosque"], "#00c853",
+        ["get", "isDorm"], "#aa00ff",
+        "#ff9100"
       ],
       "fill-extrusion-height": ["get", "height"],
       "fill-extrusion-base": ["get", "minHeight"],
@@ -80,20 +118,46 @@ map.on("load", () => {
   });
 
   map.setLight({ anchor: "viewport", intensity: 0.4 });
+  buildConnections();
   loadCampusData();
 });
 
+// ---- Kampüsler arası bağlantılar ----
+
+function distKm(a, b) {
+  const R = 6371, d2r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * d2r, dLng = (b.lng - a.lng) * d2r;
+  const s = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * d2r) * Math.cos(b.lat * d2r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Ana yerleşke Göztepe'den diğer tüm yerleşkelere hat çizer (mesafe etiketli).
+function buildConnections() {
+  const hub = CAMPUSES[0];
+  const features = CAMPUSES.slice(1).map(c => ({
+    type: "Feature",
+    geometry: {
+      type: "LineString",
+      coordinates: [[hub.lng, hub.lat], [c.lng, c.lat]]
+    },
+    properties: { label: `${distKm(hub, c).toFixed(1)} km` }
+  }));
+  const src = map.getSource("campus-links");
+  if (src) src.setData({ type: "FeatureCollection", features });
+}
+
 // ---- Overpass: yalnızca üniversite arazisindeki binaları getir ----
 
-// OSM'de "Marmara" adlı/işletmeli üniversite arazilerini bulur, bu arazilerin
+// OSM'de "Marmara" adlı üniversite arazilerini bulur ve bu arazilerin
 // İÇİNDEKİ binaları döndürür. Şehrin geri kalanındaki binalar sorguya girmez.
+// (operator filtresi bilerek yok: spor sahası gibi tesis poligonlarının
+// kampüs sınırı sanılmasına yol açıyordu.)
 function campusAreaQuery() {
   return `[out:json][timeout:90];
 (
   way["amenity"="university"]["name"~"armara"](${BBOX});
   relation["amenity"="university"]["name"~"armara"](${BBOX});
-  way["operator"~"Marmara Üniversitesi"](${BBOX});
-  relation["operator"~"Marmara Üniversitesi"](${BBOX});
 )->.unis;
 .unis map_to_area ->.a;
 (
@@ -121,7 +185,10 @@ function parseHeight(tags) {
   if (h != null) return h;
   const levels = tags["building:levels"] != null ? num(tags["building:levels"]) : null;
   if (levels != null) return levels * 3.2;
-  return 9; // yükseklik verisi yoksa ~3 kat varsay
+  // Saha üstü çatı/tribün gibi yapılar yükseklik verisi yoksa alçak çizilir;
+  // aksi halde spor sahalarının üzerinde dev bloklar oluşuyordu.
+  if (tags.building === "roof" || tags.building === "grandstand") return 5;
+  return 9; // diğer binalar için ~3 kat varsay
 }
 
 function parseMinHeight(tags) {
@@ -155,7 +222,8 @@ function buildingFeatures(elements) {
   const features = [];
   for (const el of elements) {
     const tags = el.tags || {};
-    if (!tags.building) continue;
+    // building=no gerçek bina değildir; spor sahaları böyle işaretlenebiliyor.
+    if (!tags.building || tags.building === "no") continue;
     for (const ring of elementPolygons(el)) {
       features.push({
         type: "Feature",
@@ -163,14 +231,45 @@ function buildingFeatures(elements) {
         properties: {
           height: parseHeight(tags),
           minHeight: parseMinHeight(tags),
+          isRoof: tags.building === "roof" || tags.building === "grandstand",
           isHospital: tags.building === "hospital" || tags.amenity === "hospital",
           isMosque: tags.building === "mosque" || tags.amenity === "place_of_worship",
+          isDorm: tags.building === "dormitory",
           name: tags.name || ""
         }
       });
     }
   }
   return features;
+}
+
+function polyCentroid(ring) {
+  let lng = 0, lat = 0;
+  for (const [x, y] of ring) { lng += x; lat += y; }
+  return [lng / ring.length, lat / ring.length];
+}
+
+// İşaretçileri OSM'deki gerçek kampüs poligonunun merkezine oturtur;
+// isim eşleşmesi olan poligonlara öncelik verir.
+function snapMarkers(groundFeatures) {
+  CAMPUSES.forEach((c, i) => {
+    let best = null, bestScore = Infinity;
+    for (const f of groundFeatures) {
+      const [clng, clat] = polyCentroid(f.geometry.coordinates[0]);
+      const d = distKm(c, { lat: clat, lng: clng });
+      if (d > 2.0) continue;
+      const name = (f.properties.name || "").toLocaleLowerCase("tr");
+      const nameHit = (c.match || []).some(k => name.includes(k));
+      const score = nameHit ? d * 0.3 : d;
+      if (score < bestScore) { bestScore = score; best = [clng, clat]; }
+    }
+    if (best) {
+      c.lng = best[0];
+      c.lat = best[1];
+      markers[i].setLngLat(best);
+    }
+  });
+  buildConnections();
 }
 
 async function overpass(query) {
@@ -194,7 +293,7 @@ async function loadCampusData() {
       const tags = el.tags || {};
       if (tags.building) {
         buildingEls.push(el);
-      } else if (tags.amenity === "university" || tags.operator) {
+      } else if (tags.amenity === "university") {
         for (const ring of elementPolygons(el)) {
           groundFeatures.push({
             type: "Feature",
@@ -215,6 +314,7 @@ async function loadCampusData() {
 
     map.getSource("campus-grounds").setData({ type: "FeatureCollection", features: groundFeatures });
     map.getSource("campus-buildings").setData({ type: "FeatureCollection", features });
+    snapMarkers(groundFeatures);
     console.log(`Yerleşke verisi: ${groundFeatures.length} arazi, ${features.length} bina`);
   } catch (err) {
     console.warn("Yerleşke bina verisi yüklenemedi:", err);
@@ -272,7 +372,7 @@ CAMPUSES.forEach((campus, i) => {
     `${campus.info}${approxNote}`
   );
 
-  const marker = new maplibregl.Marker({ color: "#10314b" })
+  const marker = new maplibregl.Marker({ color: "#c2185b" })
     .setLngLat([campus.lng, campus.lat])
     .setPopup(popup)
     .addTo(map);
