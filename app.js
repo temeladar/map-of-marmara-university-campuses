@@ -3,6 +3,8 @@
 // bu alanın dışına çıkamaz.
 const STYLE_URL = "https://tiles.openfreemap.org/styles/bright";
 const SATELLITE_TILES = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+// Açık yükseklik (DEM) tile'ları — anahtar gerektirmez (Mapzen/AWS Terrain Tiles).
+const TERRAIN_TILES = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
 const OVERPASS_MIRRORS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
@@ -36,6 +38,151 @@ const marker = new maplibregl.Marker({ color: "#c2185b" })
   ))
   .addTo(map);
 
+// ---- three.js: binaları arazi üzerinde gerçek 3B model olarak çizen özel katman ----
+// MapLibre'nin "Adding 3D models with three.js on terrain" örneğindeki kalıp:
+// sahne merkezi bir kampüs noktasına sabitlenir, her karede queryTerrainElevation
+// ile merkezin araziye göre yüksekliği alınıp sahne matrisine eklenir.
+
+const BUILDING_COLORS = {
+  roof: 0xdcd9d3,
+  hospital: 0xe7c3bc,
+  mosque: 0xc9dec9,
+  dorm: 0xd4cbe6,
+  default: 0xeae6df
+};
+// Yamaçta binanın altı açık kalmasın diye zeminin altına inen temel derinliği (m).
+const FOUNDATION_M = 8;
+
+const threeBuildings = {
+  id: "threejs-buildings",
+  type: "custom",
+  renderingMode: "3d",
+  origin: [CAMPUS.lng, CAMPUS.lat],
+  pendingFeatures: null,
+  meshes: [],
+
+  onAdd(mapInstance, gl) {
+    this.map = mapInstance;
+    this.camera = new THREE.Camera();
+    // Sahne ekseni: x = doğu (m), y = kuzey (m), z = yukarı (m).
+    this.scene = new THREE.Scene();
+
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.5);
+    sun.position.set(0.6, -0.5, 1).normalize();
+    this.scene.add(sun);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.18);
+    fill.position.set(-0.7, 0.6, 0.6).normalize();
+    this.scene.add(fill);
+
+    this.materials = {};
+    for (const [kind, color] of Object.entries(BUILDING_COLORS)) {
+      this.materials[kind] = new THREE.MeshLambertMaterial({
+        color,
+        side: THREE.DoubleSide
+      });
+    }
+
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: mapInstance.getCanvas(),
+      context: gl,
+      antialias: true
+    });
+    this.renderer.autoClear = false;
+
+    if (this.pendingFeatures) {
+      const features = this.pendingFeatures;
+      this.pendingFeatures = null;
+      this.setBuildings(features);
+    }
+  },
+
+  // (lng, lat) → sahne merkezine göre metre (x = doğu, y = kuzey).
+  toLocal(lng, lat) {
+    const d2r = Math.PI / 180, R = 6378137;
+    return [
+      (lng - this.origin[0]) * d2r * R * Math.cos(this.origin[1] * d2r),
+      (lat - this.origin[1]) * d2r * R
+    ];
+  },
+
+  setBuildings(features) {
+    if (!this.scene) {
+      this.pendingFeatures = features;
+      return;
+    }
+    for (const mesh of this.meshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    this.meshes = [];
+    this.origin = [CAMPUS.lng, CAMPUS.lat];
+
+    for (const f of features) {
+      const ring = f.geometry.coordinates[0];
+      const p = f.properties;
+      const shape = new THREE.Shape();
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [x, y] = this.toLocal(ring[i][0], ring[i][1]);
+        if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+      }
+      // Yerden yükselen binalara temel eklenir; köprü/çatı gibi min_height'lı
+      // parçalarda eklenmez ki altları görünür kalsın.
+      const foundation = p.minHeight > 0 ? 0 : FOUNDATION_M;
+      const depth = Math.max(p.height - p.minHeight, 2) + foundation;
+      const geom = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false });
+      const kind = p.isRoof ? "roof"
+        : p.isHospital ? "hospital"
+        : p.isMosque ? "mosque"
+        : p.isDorm ? "dorm"
+        : "default";
+      const mesh = new THREE.Mesh(geom, this.materials[kind]);
+      mesh.userData.centroid = polyCentroid(ring);
+      mesh.userData.zBase = p.minHeight - foundation;
+      mesh.position.z = mesh.userData.zBase;
+      this.scene.add(mesh);
+      this.meshes.push(mesh);
+    }
+    this.updateElevations();
+    if (this.map) this.map.triggerRepaint();
+  },
+
+  // Her binayı bulunduğu noktadaki arazi yüksekliğine oturtur. Yükseklikler
+  // sahne merkezine göre farktır; terrain tile'ları geldikçe yeniden çağrılır.
+  updateElevations() {
+    if (!this.map || this.meshes.length === 0) return;
+    const base = this.map.queryTerrainElevation(this.origin);
+    if (base == null) return;
+    let changed = false;
+    for (const mesh of this.meshes) {
+      const elev = this.map.queryTerrainElevation(mesh.userData.centroid);
+      const z = (elev == null ? 0 : elev - base) + mesh.userData.zBase;
+      if (Math.abs(mesh.position.z - z) > 0.05) {
+        mesh.position.z = z;
+        changed = true;
+      }
+    }
+    if (changed) this.map.triggerRepaint();
+  },
+
+  render(gl, matrix) {
+    if (!this.renderer || this.meshes.length === 0) return;
+    // queryTerrainElevation, kamera merkezinin arazi yüksekliğine GÖRE fark
+    // döndürür; bu ofset eklenmezse sahne havada/yerin altında görünür.
+    const centerOffset = this.map.queryTerrainElevation(this.origin) || 0;
+    const originMerc = maplibregl.MercatorCoordinate.fromLngLat(this.origin, centerOffset);
+    const s = originMerc.meterInMercatorCoordinateUnits();
+    const m = new THREE.Matrix4().fromArray(matrix);
+    // scale(s, -s, s): sahnedeki (doğu, kuzey, yukarı) → mercator (x, -y, z).
+    const l = new THREE.Matrix4()
+      .makeTranslation(originMerc.x, originMerc.y, originMerc.z)
+      .scale(new THREE.Vector3(s, -s, s));
+    this.camera.projectionMatrix = m.multiply(l);
+    this.renderer.resetState();
+    this.renderer.render(this.scene, this.camera);
+  }
+};
+
 map.on("load", () => {
   // Yollar gri/beyaz tonlarda kalsın (sade görünüm).
   for (const layer of map.getStyle().layers) {
@@ -46,6 +193,24 @@ map.on("load", () => {
       } catch (e) { /* tek katman boyanamazsa geri kalanı etkilenmesin */ }
     }
   }
+
+  // 3B arazi: DEM kaynağı + hafif gölgeleme (hillshade).
+  map.addSource("terrain-dem", {
+    type: "raster-dem",
+    tiles: [TERRAIN_TILES],
+    encoding: "terrarium",
+    tileSize: 256,
+    maxzoom: 13,
+    attribution: "Yükseklik verisi © Mapzen, AWS Terrain Tiles"
+  });
+  map.addSource("hillshade-dem", {
+    type: "raster-dem",
+    tiles: [TERRAIN_TILES],
+    encoding: "terrarium",
+    tileSize: 256,
+    maxzoom: 13
+  });
+  map.setTerrain({ source: "terrain-dem", exaggeration: 1 });
 
   map.addSource("satellite", {
     type: "raster",
@@ -59,6 +224,16 @@ map.on("load", () => {
     type: "raster",
     source: "satellite",
     layout: { visibility: "none" }
+  });
+
+  map.addLayer({
+    id: "hillshade",
+    type: "hillshade",
+    source: "hillshade-dem",
+    paint: {
+      "hillshade-shadow-color": "#5a4f3f",
+      "hillshade-exaggeration": 0.35
+    }
   });
 
   // Çerçeve dışını kapatan beyaz maske (dünya − dikdörtgen delik).
@@ -97,31 +272,48 @@ map.on("load", () => {
     paint: { "line-color": "#34a853", "line-width": 2.5 }
   });
 
-  // Külliye binaları — Apple Maps benzeri açık krem/pastel 3B stil.
+  // Külliye binaları — three.js ile arazi üzerinde gerçek 3B modeller.
+  // GeoJSON kaynağı zemin izi (footprint) altlığı için tutulur; hacimler
+  // yukarıdaki threeBuildings özel katmanında çizilir.
   map.addSource("campus-buildings", {
     type: "geojson",
     data: { type: "FeatureCollection", features: [] }
   });
   map.addLayer({
-    id: "campus-buildings",
-    type: "fill-extrusion",
+    id: "campus-buildings-footprint",
+    type: "fill",
     source: "campus-buildings",
     minzoom: 11,
-    paint: {
-      "fill-extrusion-color": [
-        "case",
-        ["get", "isRoof"], "#dcd9d3",
-        ["get", "isHospital"], "#e7c3bc",
-        ["get", "isMosque"], "#c9dec9",
-        ["get", "isDorm"], "#d4cbe6",
-        "#eae6df"
-      ],
-      "fill-extrusion-height": ["get", "height"],
-      "fill-extrusion-base": ["get", "minHeight"],
-      "fill-extrusion-opacity": 1,
-      "fill-extrusion-vertical-gradient": true
-    }
+    paint: { "fill-color": "#d8d4cc", "fill-opacity": 0.45 }
   });
+
+  if (window.THREE) {
+    map.addLayer(threeBuildings);
+    // Terrain tile'ları geldikçe binaları zemine yeniden oturt.
+    map.on("idle", () => threeBuildings.updateElevations());
+  } else {
+    // three.js yüklenemezse eski fill-extrusion görünümüne dön.
+    map.addLayer({
+      id: "campus-buildings",
+      type: "fill-extrusion",
+      source: "campus-buildings",
+      minzoom: 11,
+      paint: {
+        "fill-extrusion-color": [
+          "case",
+          ["get", "isRoof"], "#dcd9d3",
+          ["get", "isHospital"], "#e7c3bc",
+          ["get", "isMosque"], "#c9dec9",
+          ["get", "isDorm"], "#d4cbe6",
+          "#eae6df"
+        ],
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-base": ["get", "minHeight"],
+        "fill-extrusion-opacity": 1,
+        "fill-extrusion-vertical-gradient": true
+      }
+    });
+  }
 
   map.setLight({ anchor: "viewport", color: "#ffffff", intensity: 0.35 });
   loadCampusData();
@@ -375,6 +567,8 @@ function applyData(data) {
     CAMPUS.lat = data.markerPos[1];
     marker.setLngLat(data.markerPos);
   }
+  // three.js bina modelleri (sahne merkezi güncel CAMPUS konumuna kurulur).
+  threeBuildings.setBuildings(data.buildings.features);
   applyFrame(data.rect);
   fillBuildingList(data.buildings.features);
 }
