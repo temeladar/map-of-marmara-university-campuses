@@ -1,6 +1,6 @@
-# RTE Külliyesi 3B Harita
+# RTE Külliyesi Uydu Haritası
 
-Marmara Üniversitesi **Recep Tayyip Erdoğan Külliyesi**'ne (Başıbüyük, Maltepe) odaklanmış interaktif 3B harita. [MapLibre GL JS](https://maplibre.org/) + [three.js](https://threejs.org/) kullanır; API anahtarı ve derleme adımı gerektirmez — statik bir sayfadır.
+Marmara Üniversitesi **Recep Tayyip Erdoğan Külliyesi**'ne (Başıbüyük, Maltepe) odaklanmış interaktif harita. Külliyenin binaları, sentetik 3B modeller yerine **doğrudan gerçek uydu görüntüsüyle** (Esri World Imagery) gösterilir. [MapLibre GL JS](https://maplibre.org/) kullanır; API anahtarı ve derleme adımı gerektirmez — statik bir sayfadır.
 
 ## Çalıştırma
 
@@ -13,16 +13,14 @@ python3 -m http.server 8000
 
 ## Özellikler
 
-- Harita, külliye sınırlarının **1 km çevresindeki dikdörtgen alanla** sınırlıdır: dışarısı beyaz maskeyle kapatılır, kamera bu çerçevenin dışına çıkamaz (pembe çizgi çerçeveyi gösterir).
-- Harita **3B arazi (terrain)** içerir: yükseklik verisi açık Mapzen/AWS Terrain Tiles DEM'inden yüklenir, hafif hillshade gölgelemesiyle desteklenir.
-- Külliyenin binaları OSM ayak izlerinden **three.js ile gerçek 3B model** olarak (özel MapLibre katmanında) arazi üzerine çizilir; her bina `queryTerrainElevation` ile bulunduğu noktadaki zemine oturtulur, yamaçlarda altı açık kalmasın diye zemine gömülü bir temel eklenir. Kampüs poligonu dışındaki hiçbir bina modellenmez.
-- **Gerçekçi görünüm** (külliyenin Selçuklu-Osmanlı çizgili bej taş mimarisine göre): uydu zemini varsayılan açıktır; **çatılara Esri uydu görüntüsünden gerçek çatı dokusu** coğrafi hizalı olarak giydirilir; cephelere kat sayısına göre **pencere sıralı prosedürel taş doku** uygulanır; OSM'de cami işaretli binaya **kurşun kubbe + minare** eklenir. OSM'deki `building:colour` etiketi cepheye yansıtılır.
-- Kenar çubuğu, OSM'de adlandırılmış külliye binalarını listeler; tıklayınca kamera binaya uçar.
-- **3B / 2B** perspektif geçişi, **Uydu** (Esri) katmanı ve **⟳** otomatik kamera dönüşü.
-- Veri iki küçük Overpass sorgusuyla çekilir, 4 aynada tekrar denenir ve 1 hafta `localStorage`'da önbelleklenir. İşaretçi, OSM'deki gerçek kampüs poligonunun merkezine otomatik oturur.
+- Külliyenin binaları **gerçek uydu görüntüsünden** görünür (Esri World Imagery). Sentetik 3B kutular veya prosedürel bina modelleri yoktur — gördüğünüz binalar sahanın gerçek fotoğrafıdır.
+- Harita, külliye sınırlarının **1 km çevresindeki dikdörtgen alanla** sınırlıdır: dışarısı beyaz maskeyle kapatılır, kamera bu çerçevenin dışına çıkamaz (pembe çizgi çerçeveyi, sarı çizgi kampüs sınırını gösterir).
+- Varsayılan görünüm **kuş bakışı (2B)** ve uydu katmanı açıktır. **3B** düğmesi kamerayı eğerek arazi kabartmasını (Mapzen/AWS Terrain Tiles DEM) gösterir; **Uydu** düğmesi uydu katmanını açıp kapatır; **⟳** kamerayı otomatik döndürür.
+- Kenar çubuğu, OSM'de adlandırılmış külliye binalarını listeler; bir bina seçince kamera oraya uçar ve o bina uydu görüntüsü üzerinde ince turkuaz bir çerçeveyle vurgulanır.
+- Veri iki küçük Overpass sorgusuyla çekilir (arazi sınırları + bina adları/konumları), 4 aynada tekrar denenir ve 1 hafta `localStorage`'da önbelleklenir. İşaretçi, OSM'deki gerçek kampüs poligonunun merkezine otomatik oturur.
 
 ## Notlar
 
-- Bina yükseklikleri `height` → `building:levels × 3,2 m` → 9 m sırasıyla belirlenir; saha üstü çatı/tribün yapıları alçak ve açık gri çizilir.
-- Fotogerçekçi (birebir doku kaplı) 3B için Google Photorealistic 3D Tiles veya Cesium ion gibi API anahtarı gerektiren servisler gerekir.
-- MapLibre GL ve three.js `vendor/` altında repoya gömülüdür; yalnızca harita/DEM tile'ları ve OSM verisi internetten yüklenir. three.js yüklenemezse binalar eski `fill-extrusion` görünümüne geri döner.
+- Bina konumları/adları OSM/Overpass'tan gelir; yalnızca kenar çubuğu listesi ve seçili bina vurgusu için kullanılır. Binaların görünümü tamamen uydu görüntüsünden gelir.
+- Daha da yakın/güncel fotogerçekçi görüntü için Esri yerine başka bir uydu tile sağlayıcısı (Google, Bing, Maxar vb.) kullanılabilir; çoğu API anahtarı ister.
+- MapLibre GL `vendor/` altında repoya gömülüdür; yalnızca harita/uydu/DEM tile'ları ve OSM verisi internetten yüklenir.
